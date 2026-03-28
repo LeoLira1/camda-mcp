@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createClient, type Client } from "@libsql/client";
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
@@ -22,7 +23,7 @@ const db: Client = createClient({
   authToken: TURSO_TOKEN,
 });
 
-// ── MCP Server ───────────────────────────────────────────────────────────────
+// ── MCP Server factory ────────────────────────────────────────────────────────
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -39,18 +40,8 @@ function createMcpServer(): McpServer {
       const result = await db.execute(
         "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name"
       );
-      const tables = result.rows.map((r) => ({
-        name: r[0],
-        type: r[1],
-      }));
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(tables, null, 2),
-          },
-        ],
-      };
+      const tables = result.rows.map((r) => ({ name: r[0], type: r[1] }));
+      return { content: [{ type: "text", text: JSON.stringify(tables, null, 2) }] };
     }
   );
 
@@ -64,29 +55,15 @@ function createMcpServer(): McpServer {
         db.execute(`PRAGMA table_info(${JSON.stringify(table)})`),
         db.execute(`PRAGMA index_list(${JSON.stringify(table)})`),
       ]);
-
       const columns = pragma.rows.map((r) => ({
-        cid: r[0],
-        name: r[1],
-        type: r[2],
-        notnull: r[3] === 1,
-        default: r[4],
-        pk: r[5] === 1,
+        cid: r[0], name: r[1], type: r[2],
+        notnull: r[3] === 1, default: r[4], pk: r[5] === 1,
       }));
-
       const indexes = indexList.rows.map((r) => ({
-        seq: r[0],
-        name: r[1],
-        unique: r[2] === 1,
+        seq: r[0], name: r[1], unique: r[2] === 1,
       }));
-
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ table, columns, indexes }, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify({ table, columns, indexes }, null, 2) }],
       };
     }
   );
@@ -107,36 +84,16 @@ function createMcpServer(): McpServer {
       const allowed = ["SELECT", "WITH", "EXPLAIN"];
       if (!allowed.some((kw) => normalized.startsWith(kw))) {
         return {
-          content: [
-            {
-              type: "text",
-              text: "Erro: apenas queries SELECT são permitidas por esta ferramenta. Use a ferramenta 'execute' para escrita.",
-            },
-          ],
+          content: [{ type: "text", text: "Erro: apenas queries SELECT são permitidas. Use 'execute' para escrita." }],
           isError: true,
         };
       }
-
-      const result = await db.execute({
-        sql,
-        args: (args as any[]) ?? [],
-      });
-
+      const result = await db.execute({ sql, args: (args as any[]) ?? [] });
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                columns: result.columns,
-                rows: result.rows,
-                rowsAffected: result.rowsAffected,
-              },
-              null,
-              2
-            ),
-          },
-        ],
+        content: [{
+          type: "text",
+          text: JSON.stringify({ columns: result.columns, rows: result.rows, rowsAffected: result.rowsAffected }, null, 2),
+        }],
       };
     }
   );
@@ -153,25 +110,12 @@ function createMcpServer(): McpServer {
         .describe("Parâmetros para a instrução (opcional)"),
     },
     async ({ sql, args }) => {
-      const result = await db.execute({
-        sql,
-        args: (args as any[]) ?? [],
-      });
-
+      const result = await db.execute({ sql, args: (args as any[]) ?? [] });
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                rowsAffected: result.rowsAffected,
-                lastInsertRowid: result.lastInsertRowid?.toString(),
-              },
-              null,
-              2
-            ),
-          },
-        ],
+        content: [{
+          type: "text",
+          text: JSON.stringify({ rowsAffected: result.rowsAffected, lastInsertRowid: result.lastInsertRowid?.toString() }, null, 2),
+        }],
       };
     }
   );
@@ -182,24 +126,14 @@ function createMcpServer(): McpServer {
     "Executa múltiplas instruções SQL em uma transação atômica",
     {
       statements: z
-        .array(
-          z.object({
-            sql: z.string(),
-            args: z
-              .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
-              .optional(),
-          })
-        )
+        .array(z.object({
+          sql: z.string(),
+          args: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+        }))
         .describe("Lista de instruções SQL a executar em batch"),
     },
     async ({ statements }) => {
-      const results = await db.batch(
-        statements.map((s) => ({
-          sql: s.sql,
-          args: (s.args as any[]) ?? [],
-        }))
-      );
-
+      const results = await db.batch(statements.map((s) => ({ sql: s.sql, args: (s.args as any[]) ?? [] })));
       const summary = results.map((r, i) => ({
         statement: i,
         rowsAffected: r.rowsAffected,
@@ -207,60 +141,93 @@ function createMcpServer(): McpServer {
         columns: r.columns,
         rows: r.rows,
       }));
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(summary, null, 2),
-          },
-        ],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
     }
   );
 
   return server;
 }
 
-// ── Express HTTP server with SSE transport ────────────────────────────────────
+// ── Express ───────────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json());
 
-// CORS — allow claude.ai and any origin to connect
+// CORS
 app.use((req: Request, res: Response, next: () => void) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") {
-    res.sendStatus(204);
-    return;
-  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, mcp-session-id");
+  if (req.method === "OPTIONS") { res.sendStatus(204); return; }
   next();
 });
 
-// One SSEServerTransport per connected session
-const sessions = new Map<string, SSEServerTransport>();
+// ── Streamable HTTP transport (primary — used by claude.ai web) ───────────────
+
+const httpSessions = new Map<string, StreamableHTTPServerTransport>();
+
+app.post("/mcp", async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+  if (sessionId && httpSessions.has(sessionId)) {
+    const transport = httpSessions.get(sessionId)!;
+    await transport.handleRequest(req, res, req.body);
+    return;
+  }
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+    onsessioninitialized: (id) => httpSessions.set(id, transport),
+  });
+
+  transport.onclose = () => {
+    if (transport.sessionId) httpSessions.delete(transport.sessionId);
+  };
+
+  const server = createMcpServer();
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+});
+
+app.delete("/mcp", async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (sessionId) {
+    const transport = httpSessions.get(sessionId);
+    if (transport) { await transport.close(); httpSessions.delete(sessionId); }
+  }
+  res.sendStatus(204);
+});
+
+app.get("/mcp", async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (sessionId && httpSessions.has(sessionId)) {
+    const transport = httpSessions.get(sessionId)!;
+    await transport.handleRequest(req, res);
+    return;
+  }
+  res.status(400).json({ error: "No session. Send POST /mcp first." });
+});
+
+// ── SSE transport (legacy fallback) ──────────────────────────────────────────
+
+const sseSessions = new Map<string, SSEServerTransport>();
 
 app.get("/sse", async (req: Request, res: Response) => {
   const transport = new SSEServerTransport("/messages", res);
-  const mcpServer = createMcpServer();
-
-  sessions.set(transport.sessionId, transport);
-  res.on("close", () => sessions.delete(transport.sessionId));
-
-  await mcpServer.connect(transport);
+  const server = createMcpServer();
+  sseSessions.set(transport.sessionId, transport);
+  res.on("close", () => sseSessions.delete(transport.sessionId));
+  await server.connect(transport);
 });
 
 app.post("/messages", async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
-  const transport = sessions.get(sessionId);
-  if (!transport) {
-    res.status(404).json({ error: "Session not found" });
-    return;
-  }
+  const transport = sseSessions.get(sessionId);
+  if (!transport) { res.status(404).json({ error: "Session not found" }); return; }
   await transport.handlePostMessage(req, res);
 });
+
+// ── Health ────────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", server: "camda-turso-mcp" });
@@ -268,5 +235,6 @@ app.get("/health", (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`camda-turso MCP server running on port ${PORT}`);
-  console.log(`SSE endpoint: http://0.0.0.0:${PORT}/sse`);
+  console.log(`Streamable HTTP: http://0.0.0.0:${PORT}/mcp`);
+  console.log(`SSE (legacy):    http://0.0.0.0:${PORT}/sse`);
 });
