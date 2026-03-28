@@ -8,7 +8,6 @@ import { z } from "zod";
 
 const TURSO_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
-const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN; // optional bearer auth
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 if (!TURSO_URL || !TURSO_TOKEN) {
@@ -227,6 +226,18 @@ function createMcpServer(): McpServer {
 
 const app = express();
 app.use(express.json());
+
+// CORS — allow claude.ai and any origin to connect
+app.use((req: Request, res: Response, next: () => void) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 
 // One SSEServerTransport per connected session
 const sessions = new Map<string, SSEServerTransport>();
