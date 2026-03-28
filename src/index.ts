@@ -228,18 +228,10 @@ function createMcpServer(): McpServer {
 const app = express();
 app.use(express.json());
 
-// Optional bearer token auth middleware
-function authMiddleware(req: Request, res: Response, next: () => void) {
-  if (!MCP_AUTH_TOKEN) return next();
-  const auth = req.headers.authorization;
-  if (auth === `Bearer ${MCP_AUTH_TOKEN}`) return next();
-  res.status(401).json({ error: "Unauthorized" });
-}
-
 // One SSEServerTransport per connected session
 const sessions = new Map<string, SSEServerTransport>();
 
-app.get("/sse", authMiddleware, async (req: Request, res: Response) => {
+app.get("/sse", async (req: Request, res: Response) => {
   const transport = new SSEServerTransport("/messages", res);
   const mcpServer = createMcpServer();
 
@@ -249,7 +241,7 @@ app.get("/sse", authMiddleware, async (req: Request, res: Response) => {
   await mcpServer.connect(transport);
 });
 
-app.post("/messages", authMiddleware, async (req: Request, res: Response) => {
+app.post("/messages", async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
   const transport = sessions.get(sessionId);
   if (!transport) {
